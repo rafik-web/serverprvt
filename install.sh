@@ -2,7 +2,7 @@
 
 # InfluxDB and Grafana Setup Script for Amazon Lightsail
 # Configures Cloudflare for SSL/TLS Mode: Full (using a self-signed certificate)
-# *** Self-signed certificate validity is set to 10 years (3650 days) ***
+# *** Attempting Fix for DNS name is invalid error by using $1 directly ***
 # *** SECURITY WARNING: API Key input is VISIBLE as requested ***
 # Usage: Save as install_cf.sh, chmod +x install_cf.sh, sudo ./install_cf.sh
 
@@ -43,30 +43,19 @@ echo -e "${BOLD}${MAGENTA}"
 echo "┌────────────────────────────────────────────────────────┐"
 echo "│     InfluxDB + Grafana + Nginx Setup (Lightsail)       │"
 echo "│         *** Configuring for Cloudflare FULL SSL ***      │"
-echo "│    (Using 10-Year Self-Signed Certificate on Server)   │"
+echo "│       (Trying Direct Arg Use for DNS Name Fix)         │"
 echo "└────────────────────────────────────────────────────────┘"
 echo -e "${NC}"
 
 # --- Pre-flight Checks ---
 if [ "$EUID" -ne 0 ]; then log_error "Run as root/sudo."; exit 1; fi
-for cmd in curl wget gpg apt ufw systemctl openssl jq; do
-    if ! command -v $cmd &>/dev/null; then
-        log_warning "$cmd not found. Attempting install..."
-        apt update && apt install -y $cmd || { log_error "Failed to install $cmd."; exit 1; }
-        log_success "$cmd installed."
-    fi
-done
+for cmd in curl wget gpg apt ufw systemctl openssl jq; do if ! command -v $cmd &>/dev/null; then log_warning "$cmd not found. Installing..."; apt update && apt install -y $cmd || { log_error "Failed install $cmd."; exit 1; }; log_success "$cmd installed."; fi; done
 
 # --- User Input ---
 log_info "Gathering required information..."
-while [ -z "$DOMAIN" ]; do read -p "$(echo -e "${YELLOW}Enter your main domain (e.g., example.com):${NC} ")" DOMAIN; if [[ ! "$DOMAIN" == *"."* ]]; then log_warning "Invalid domain format."; DOMAIN=""; fi; done
-while [ -z "$CF_EMAIL" ]; do read -p "$(echo -e "${YELLOW}Enter Cloudflare account email:${NC} ")" CF_EMAIL; if [[ ! "$CF_EMAIL" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then log_warning "Invalid email format."; CF_EMAIL=""; fi; done
-while [ -z "$CF_API_KEY" ]; do
-    log_warning "API Key requires Zone:Read, DNS:Edit, SSL:Edit permissions."
-    read -p "$(echo -e "${YELLOW}${BOLD}Enter Cloudflare Global API Key (VISIBLE INPUT):${NC} ")" CF_API_KEY
-    echo # Add newline
-    if [ -z "$CF_API_KEY" ]; then log_warning "API Key cannot be empty."; fi
-done
+while [ -z "$DOMAIN" ]; do read -p "$(echo -e "${YELLOW}Enter domain:${NC} ")" DOMAIN; if [[ ! "$DOMAIN" == *"."* ]]; then log_warning "Invalid domain."; DOMAIN=""; fi; done
+while [ -z "$CF_EMAIL" ]; do read -p "$(echo -e "${YELLOW}Enter CF email:${NC} ")" CF_EMAIL; if [[ ! "$CF_EMAIL" =~ ^.+@.+\..+$ ]]; then log_warning "Invalid email."; CF_EMAIL=""; fi; done
+while [ -z "$CF_API_KEY" ]; do log_warning "API Key needs Zone:Read, DNS:Edit, SSL:Edit"; read -p "$(echo -e "${YELLOW}${BOLD}Enter CF API Key (VISIBLE):${NC} ")" CF_API_KEY; echo; if [ -z "$CF_API_KEY" ]; then log_warning "API Key empty."; fi; done
 
 # Get Zone ID
 show_progress "Fetching Cloudflare Zone ID for $DOMAIN"
@@ -77,19 +66,17 @@ log_success "Found Cloudflare Zone ID: $CF_ZONE_ID"
 
 DATABASE_SUBDOMAIN="database.${DOMAIN}"
 DASHBOARD_SUBDOMAIN="dashboard.${DOMAIN}"
-SSL_CERT_DIR="/etc/nginx/ssl" # Directory for self-signed certs
+SSL_CERT_DIR="/etc/nginx/ssl"
 SELF_SIGNED_CERT_FILE="${SSL_CERT_DIR}/nginx-selfsigned.crt"
 SELF_SIGNED_KEY_FILE="${SSL_CERT_DIR}/nginx-selfsigned.key"
 
 # Get Server IP
 show_progress "Detecting Server Public IPv4 Address"
 SERVER_IP=$(get_server_ip)
-if [ -z "$SERVER_IP" ]; then
-    log_error "Automatic IP detection failed."; while [ -z "$SERVER_IP" ]; do read -p "$(echo -e "${YELLOW}Manually enter server public IPv4:${NC} ")" SERVER_IP; if [[ ! "$SERVER_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then log_warning "Invalid IPv4 format."; SERVER_IP=""; fi; done; log_success "Using manually entered Server IPv4: ${SERVER_IP}"
-else log_success "Detected Server IPv4: ${SERVER_IP}"; fi
+if [ -z "$SERVER_IP" ]; then log_error "IP detection failed."; while [ -z "$SERVER_IP" ]; do read -p "$(echo -e "${YELLOW}Manually enter server IPv4:${NC} ")" SERVER_IP; if [[ ! "$SERVER_IP" =~ ^[0-9.]+$ ]]; then log_warning "Invalid IPv4."; SERVER_IP=""; fi; done; log_success "Using manual IP: ${SERVER_IP}"; else log_success "Detected IP: ${SERVER_IP}"; fi
 
 # --- Confirmation ---
-echo -e "\n${GREEN}Setup will proceed with (Mode: FULL SSL):${NC}"; echo -e "  ${BLUE}Domain:${NC} ${DOMAIN}"; echo -e "  ${BLUE}DB URL:${NC} https://${DATABASE_SUBDOMAIN}"; echo -e "  ${BLUE}Dash URL:${NC} https://${DASHBOARD_SUBDOMAIN}"; echo -e "  ${BLUE}Server IP:${NC} ${SERVER_IP}"; echo -e "  ${BLUE}CF Email:${NC} ${CF_EMAIL}"; echo -e "  ${BLUE}CF Zone ID:${NC} ${CF_ZONE_ID}"; echo -e "  ${BLUE}SSL Dir:${NC} ${SSL_CERT_DIR} (10-Year Self-Signed Certs)"; echo -e "  ${RED}${BOLD}API Key input was visible${NC}\n"
+echo -e "\n${GREEN}Setup will proceed with (Mode: FULL SSL):${NC}"; echo -e "  ${BLUE}Domain:${NC} ${DOMAIN}"; echo -e "  ${BLUE}DB URL:${NC} https://${DATABASE_SUBDOMAIN}"; echo -e "  ${BLUE}Dash URL:${NC} https://${DASHBOARD_SUBDOMAIN}"; echo -e "  ${BLUE}Server IP:${NC} ${SERVER_IP}"; echo -e "  ${BLUE}CF Email:${NC} ${CF_EMAIL}"; echo -e "  ${BLUE}CF Zone ID:${NC} ${CF_ZONE_ID}"; echo -e "  ${BLUE}SSL Dir:${NC} ${SSL_CERT_DIR} (Self-Signed)"; echo -e "  ${RED}${BOLD}API Key visible${NC}\n"
 read -p "$(echo -e "${YELLOW}Proceed? (y/n):${NC} ")" confirm
 if [[ ! $confirm =~ ^[yY]([eE][sS])?$ ]]; then log_warning "Installation cancelled."; exit 1; fi
 
@@ -104,26 +91,59 @@ log_success "InfluxDB & Grafana installed and started."
 # --- Cloudflare DNS & SSL Settings ---
 show_progress "Configuring Cloudflare DNS and setting SSL Mode to FULL"
 create_or_update_dns_record() {
-    local name=$1 content=$2 full_hostname="${name}.${DOMAIN}" record_id current_ip
-    if [ -z "$name" ] || [ "$name" = "." ]; then log_error "DNS function error: empty name."; return 1; fi
-    log_info "Checking/Updating DNS record for ${full_hostname} -> ${content}..."
-    local get_record_response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records?type=A&name=$full_hostname" -H "X-Auth-Email: $CF_EMAIL" -H "X-Auth-Key: $CF_API_KEY" -H "Content-Type: application/json")
-    record_id=$(echo "$get_record_response" | jq -r '.result[0].id // empty'); current_ip=$(echo "$get_record_response" | jq -r '.result[0].content // empty')
+    # *** Use $1 and $2 directly, add more debug ***
+    local record_name="$1" # Store $1 in a distinct variable just for safety/clarity
+    local content="$2"
+    local full_hostname="${record_name}.${DOMAIN}"
+    local record_id current_ip
+
+    log_info "DNS Func Start: record_name='$record_name', content='$content', domain='$DOMAIN', full_hostname='$full_hostname'"
+
+    # Check if record_name is empty
+    if [ -z "$record_name" ]; then
+        log_error "DNS function error: record_name (\$1) is empty!"
+        return 1 # Return error code
+    fi
+
+    log_info "Checking DNS record for '${full_hostname}'..."
+    local get_record_response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records?type=A&name=${full_hostname}" \
+         -H "X-Auth-Email: $CF_EMAIL" -H "X-Auth-Key: $CF_API_KEY" -H "Content-Type: application/json")
+    record_id=$(echo "$get_record_response" | jq -r '.result[0].id // empty')
+    current_ip=$(echo "$get_record_response" | jq -r '.result[0].content // empty')
+
     if [ -n "$record_id" ]; then
-        if [ "$current_ip" == "$content" ]; then log_success "DNS record OK: ${full_hostname}"; else
-            local update_response=$(curl -s -w "\nHTTP_STATUS_CODE:%{http_code}\n" -X PUT "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records/$record_id" -H "X-Auth-Email: $CF_EMAIL" -H "X-Auth-Key: $CF_API_KEY" -H "Content-Type: application/json" --data "{\"type\":\"A\",\"name\":\"$full_hostname\",\"content\":\"$content\",\"ttl\":1,\"proxied\":true}")
+        if [ "$current_ip" == "$content" ]; then
+            log_success "DNS record OK: '${full_hostname}'"
+        else
+            log_info "Updating DNS record for '${full_hostname}' -> '$content'..."
+            # Debug before update call
+            echo "DEBUG DNS Update: full_hostname='${full_hostname}', content='$content', record_id='$record_id'"
+            local update_response=$(curl -s -w "\nHTTP_STATUS_CODE:%{http_code}\n" -X PUT "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records/$record_id" \
+                 -H "X-Auth-Email: $CF_EMAIL" -H "X-Auth-Key: $CF_API_KEY" -H "Content-Type: application/json" \
+                 --data "{\"type\":\"A\",\"name\":\"${full_hostname}\",\"content\":\"$content\",\"ttl\":1,\"proxied\":true}")
             local update_http_code=$(echo "$update_response" | grep "HTTP_STATUS_CODE:" | sed 's/HTTP_STATUS_CODE://'); local update_body=$(echo "$update_response" | sed '$d')
-            if [ "$update_http_code" = "200" ] && echo "$update_body" | jq -e '.success == true' > /dev/null; then log_success "Updated DNS: ${full_hostname}"; else log_error "Failed update DNS for ${full_hostname} (HTTP $update_http_code):\n$(echo "$update_body" | jq .)"; return 1; fi
+            if [ "$update_http_code" = "200" ] && echo "$update_body" | jq -e '.success == true' > /dev/null; then log_success "Updated DNS: '${full_hostname}'"; else log_error "Failed update DNS for '${full_hostname}' (HTTP $update_http_code):\n$(echo "$update_body" | jq .)"; return 1; fi
         fi
     else
-        local create_response=$(curl -s -w "\nHTTP_STATUS_CODE:%{http_code}\n" -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records" -H "X-Auth-Email: $CF_EMAIL" -H "X-Auth-Key: $CF_API_KEY" -H "Content-Type: application/json" --data "{\"type\":\"A\",\"name\":\"$full_hostname\",\"content\":\"$content\",\"ttl\":1,\"proxied\":true}")
+        log_info "Creating new DNS record for '${full_hostname}' -> '$content'..."
+         # Debug before create call
+         echo "DEBUG DNS Create: full_hostname='${full_hostname}', content='$content'"
+        local create_response=$(curl -s -w "\nHTTP_STATUS_CODE:%{http_code}\n" -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records" \
+             -H "X-Auth-Email: $CF_EMAIL" -H "X-Auth-Key: $CF_API_KEY" -H "Content-Type: application/json" \
+             --data "{\"type\":\"A\",\"name\":\"${full_hostname}\",\"content\":\"$content\",\"ttl\":1,\"proxied\":true}")
         local create_http_code=$(echo "$create_response" | grep "HTTP_STATUS_CODE:" | sed 's/HTTP_STATUS_CODE://'); local create_body=$(echo "$create_response" | sed '$d')
-        if [ "$create_http_code" = "200" ] && echo "$create_body" | jq -e '.success == true' > /dev/null; then log_success "Created DNS: ${full_hostname}"; else log_error "Failed create DNS for ${full_hostname} (HTTP $create_http_code):\n$(echo "$create_body" | jq .)"; return 1; fi
-    fi; sleep 2; return 0
+        if [ "$create_http_code" = "200" ] && echo "$create_body" | jq -e '.success == true' > /dev/null; then log_success "Created DNS: '${full_hostname}'"; else log_error "Failed create DNS for '${full_hostname}' (HTTP $create_http_code):\n$(echo "$create_body" | jq .)"; return 1; fi
+    fi
+    sleep 2
+    return 0
 }
-create_or_update_dns_record "database" "$SERVER_IP" || exit 1
-create_or_update_dns_record "dashboard" "$SERVER_IP" || exit 1
 
+# Call DNS function, exit if it returns non-zero (error)
+create_or_update_dns_record "database" "$SERVER_IP" || { log_error "Exiting due to DNS error."; exit 1; }
+create_or_update_dns_record "dashboard" "$SERVER_IP" || { log_error "Exiting due to DNS error."; exit 1; }
+
+
+# Set Cloudflare SSL/TLS mode to FULL
 show_progress "Setting Cloudflare SSL/TLS mode to FULL"
 SSL_SETTING_RESPONSE=$(curl -s -X PATCH "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/settings/ssl" -H "X-Auth-Email: $CF_EMAIL" -H "X-Auth-Key: $CF_API_KEY" -H "Content-Type: application/json" --data '{"value":"full"}')
 if echo "$SSL_SETTING_RESPONSE" | jq -e '.success == true' > /dev/null; then log_success "Successfully set SSL/TLS mode to FULL"; else log_warning "Failed to set SSL/TLS mode to FULL. Check manually. Response:\n$(echo "$SSL_SETTING_RESPONSE" | jq .)"; fi
@@ -131,19 +151,9 @@ if echo "$SSL_SETTING_RESPONSE" | jq -e '.success == true' > /dev/null; then log
 # --- Generate Self-Signed Certificate (10 Years) ---
 show_progress "Generating 10-Year Self-Signed Certificate for Nginx"
 mkdir -p "${SSL_CERT_DIR}" && chmod 700 "${SSL_CERT_DIR}"
-if [[ -f "$SELF_SIGNED_CERT_FILE" && -f "$SELF_SIGNED_KEY_FILE" ]]; then
-    log_info "Self-signed certificate files already exist. Skipping generation."
-else
-    # *** The -days 3650 flag sets the validity to 10 years ***
-    openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-        -keyout "${SELF_SIGNED_KEY_FILE}" \
-        -out "${SELF_SIGNED_CERT_FILE}" \
-        -subj "/C=US/ST=State/L=City/O=Organization/OU=OrgUnit/CN=${DOMAIN}"
-    if [ $? -eq 0 ]; then
-        log_success "Generated 10-Year Self-Signed Certificate: ${SELF_SIGNED_CERT_FILE}"
-        log_success "Generated Self-Signed Key: ${SELF_SIGNED_KEY_FILE}"
-        chmod 600 "${SELF_SIGNED_KEY_FILE}"
-    else log_error "Failed to generate self-signed certificate."; exit 1; fi
+if [[ -f "$SELF_SIGNED_CERT_FILE" && -f "$SELF_SIGNED_KEY_FILE" ]]; then log_info "Self-signed cert files exist. Skipping generation."; else
+    openssl req -x509 -nodes -days 3650 -newkey rsa:2048 -keyout "${SELF_SIGNED_KEY_FILE}" -out "${SELF_SIGNED_CERT_FILE}" -subj "/C=US/ST=State/L=City/O=Org/OU=Unit/CN=${DOMAIN}"
+    if [ $? -eq 0 ]; then log_success "Generated 10-Year Self-Signed Cert/Key"; chmod 600 "${SELF_SIGNED_KEY_FILE}"; else log_error "Failed to generate self-signed cert."; exit 1; fi
 fi
 
 # --- Configure Nginx ---
