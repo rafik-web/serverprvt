@@ -7,6 +7,7 @@
 # *** SECURITY WARNING: API Key input is VISIBLE as requested ***
 # *** FIX: Removed incorrect 'mktemp' from apt install lists ***
 # Usage: sudo bash <(curl -Ls https://your-raw-script-url.com/install-cf-auto.sh) # Replace with your URL
+# OR: Save as install_cf.sh, chmod +x install_cf.sh, sudo ./install_cf.sh
 
 # --- Configuration ---
 RED='\033[0;31m'
