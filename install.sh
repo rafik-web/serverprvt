@@ -5,6 +5,7 @@
 # Includes improved IPv4 detection methods
 # *** ALTERNATIVE APPROACH 2: Using temporary file for curl --data ***
 # *** SECURITY WARNING: API Key input is VISIBLE as requested ***
+# *** FIX: Removed incorrect 'mktemp' from apt install lists ***
 # Usage: sudo bash <(curl -Ls https://your-raw-script-url.com/install-cf-auto.sh) # Replace with your URL
 
 # --- Configuration ---
@@ -78,13 +79,22 @@ echo -e "${NC}"
 
 # --- Pre-flight Checks ---
 if [ "$EUID" -ne 0 ]; then log_error "Please run this script as root or using sudo."; exit 1; fi
-for cmd in curl wget gpg apt ufw systemctl openssl jq mktemp; do
+# Check essential commands, mktemp should exist as part of coreutils
+# *** FIX: Removed mktemp from this check loop as it's not installed separately ***
+for cmd in curl wget gpg apt ufw systemctl openssl jq; do
     if ! command -v $cmd &>/dev/null; then
         log_error "$cmd command not found. Trying to install..."
         apt update && apt install -y $cmd || { log_error "Failed to install $cmd. Please install it manually and rerun."; exit 1; }
         log_success "$cmd installed."
     fi
 done
+# Verify mktemp separately, as it's crucial but not installed via apt
+if ! command -v mktemp &> /dev/null; then
+    log_error "CRITICAL: 'mktemp' command not found. This is usually part of 'coreutils'. Please ensure coreutils is installed."
+    log_error "Try: sudo apt update && sudo apt install coreutils"
+    exit 1
+fi
+
 
 # --- User Input ---
 log_info "Gathering required information..."
@@ -155,7 +165,8 @@ if [[ ! $confirm =~ ^[yY]([eE][sS])?$ ]]; then log_warning "Installation cancell
 # --- Installation ---
 show_progress "Updating system and installing tools"
 apt update && apt upgrade -y
-apt install -y wget curl gnupg2 apt-transport-https software-properties-common ufw nginx jq openssl mktemp influxdb grafana
+# *** FIX: Removed mktemp from this install list ***
+apt install -y wget curl gnupg2 apt-transport-https software-properties-common ufw nginx jq openssl influxdb grafana
 
 show_progress "Starting InfluxDB & Grafana"
 systemctl enable --now influxdb
@@ -248,13 +259,11 @@ jq -n \
 # Check if jq succeeded and the file is not empty
 if [ $? -ne 0 ] || [ ! -s "$TMP_PAYLOAD_FILE" ]; then
     log_error "Failed to generate JSON payload or write to temporary file."
+    # Optionally: cat "$TMP_PAYLOAD_FILE" >&2 # See if anything was written
     exit 1
 fi
 
 log_info "JSON payload written to temporary file."
-# Optional: View the temp file content for debugging
-# log_info "DEBUG: Temp file content:"
-# cat "$TMP_PAYLOAD_FILE" | jq .
 
 # Request Origin Certificate from Cloudflare using the temporary file
 show_progress "Requesting Origin Certificate from Cloudflare API (using temp file)"
@@ -297,7 +306,7 @@ else
     echo "$RAW_CSR" | head -c 80 && echo "..."
     echo "DEBUG: JSON Payload Sent (from temp file, truncated):"
     # Displaying payload from temp file for debug if needed
-    head -c 500 "$TMP_PAYLOAD_FILE" && echo "..."
+    if [[ -f "$TMP_PAYLOAD_FILE" ]]; then head -c 500 "$TMP_PAYLOAD_FILE" && echo "..."; else echo "[Temp file already removed]"; fi
     echo "DEBUG: Full API response body:"
     echo "$CERT_RESPONSE_BODY" | jq . >&2
     echo ""
