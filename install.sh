@@ -308,7 +308,10 @@ EOF
 
 # Generate CSR
 openssl req -new -key "${SSL_CERT_DIR}/origin_private.key" -out "${SSL_CERT_DIR}/origin.csr" -config "${SSL_CERT_DIR}/csr.conf"
-CSR=$(cat "${SSL_CERT_DIR}/origin.csr" | base64 -w 0)
+
+# Properly format CSR for Cloudflare API (this is the fixed part)
+CSR=$(cat "${SSL_CERT_DIR}/origin.csr" | grep -v "BEGIN CERTIFICATE REQUEST" | grep -v "END CERTIFICATE REQUEST" | tr -d '\n\r')
+
 log_success "Generated CSR"
 
 # Request Origin Certificate from Cloudflare
@@ -339,6 +342,23 @@ if echo "$CERT_RESPONSE" | jq -e '.success == true' > /dev/null; then
     log_success "Origin Certificate and Private Key deployed to required locations"
 else
     log_error "Failed to create Origin Certificate. Response: $(echo "$CERT_RESPONSE" | jq -r '.errors')"
+    
+    # Debug output - this can help diagnose the issue further if it still fails
+    echo "DEBUG: CSR contents (should not be empty):"
+    echo "$CSR" | head -c 50
+    echo "... (truncated for display)"
+    echo "DEBUG: Full error response:"
+    echo "$CERT_RESPONSE"
+    
+    # Fallback procedure suggestion
+    echo ""
+    log_warning "FALLBACK OPTION: Create Origin Certificate manually from Cloudflare dashboard:"
+    echo "1. Go to Cloudflare dashboard → SSL/TLS → Origin Server"
+    echo "2. Click 'Create Certificate'"
+    echo "3. Add hostnames: ${DOMAIN}, *.${DOMAIN}, ${DATABASE_SUBDOMAIN}, ${DASHBOARD_SUBDOMAIN}"
+    echo "4. Download certificate and key, then place them in ${SSL_CERT_DIR}/"
+    echo "5. Continue setup manually by configuring Nginx"
+    
     exit 1
 fi
 
