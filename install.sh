@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # Enhanced InfluxDB and Grafana Setup Script for Amazon Lightsail
-# Uses Cloudflare Origin Certificates for HTTPS (Manual Cert Installation Required)
-# Includes fallback for manual IPv4 input if auto-detection fails.
-# Usage: sudo bash <(curl -Ls https://your-raw-script-url.com/install-cf-origin-manual-ip.sh) # Replace with your URL
+# AUTOMATICALLY generates/deploys Cloudflare Origin Certificate via API
+# !! USES GLOBAL API KEY - READ SECURITY WARNINGS !!
+# Usage: sudo bash <(curl -Ls https://your-raw-script-url.com/install-cf-origin-auto.sh) # Replace with your URL
 
 # --- Configuration ---
 RED='\033[0;31m'
@@ -43,10 +43,16 @@ show_progress() {
 echo -e "${BOLD}${MAGENTA}"
 echo "┌────────────────────────────────────────────────────────┐"
 echo "│     InfluxDB + Grafana + Nginx Setup (Lightsail)     │"
-echo "│      Using Cloudflare Origin Certificates (Manual)     │"
+echo "│    Automatic Cloudflare Origin Certificate via API     │"
 echo "│         + Manual IP Fallback Support                 │"
 echo "└────────────────────────────────────────────────────────┘"
 echo -e "${NC}"
+echo -e "${RED}${BOLD}!!!!!!!!!!!!!!!!!!!!! SECURITY WARNING !!!!!!!!!!!!!!!!!!!!!"
+echo -e "This script requires your Cloudflare Global API Key."
+echo -e "Entering it below may store it in your shell history."
+echo -e "Consider using environment variables or Cloudflare API Tokens"
+echo -e "for better security in production environments."
+echo -e "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!${NC}"
 
 # --- Pre-flight Checks ---
 if [ "$EUID" -ne 0 ]; then
@@ -54,7 +60,7 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-# Check essential commands early, Nginx will be installed later.
+# Check essential commands early, Nginx & jq will be installed later.
 for cmd in curl wget gpg apt ufw systemctl; do
     if ! command -v $cmd &> /dev/null; then
         log_error "$cmd command not found. Please install it or ensure it's in the PATH."
@@ -73,34 +79,47 @@ while [ -z "$DOMAIN" ]; do
     fi
 done
 
+# Cloudflare Credentials
+while [ -z "$CF_EMAIL" ]; do
+    read -p "$(echo -e "${YELLOW}Enter your Cloudflare Account Email Address:${NC} ")" CF_EMAIL
+     # Basic email validation
+    if [[ ! "$CF_EMAIL" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+        log_warning "Invalid email format. Please enter a valid email address."
+        CF_EMAIL=""
+    fi
+done
+
+while [ -z "$CF_API_KEY" ]; do
+    # Use -s for silent input to hide the key visually
+    read -sp "$(echo -e "${YELLOW}Enter your Cloudflare Global API Key:${NC} ")" CF_API_KEY
+    echo "" # Add a newline after silent input
+    if [ -z "$CF_API_KEY" ]; then
+       log_warning "Cloudflare Global API Key cannot be empty."
+    fi
+done
+
+
 DATABASE_SUBDOMAIN="database.${DOMAIN}"
 DASHBOARD_SUBDOMAIN="dashboard.${DOMAIN}"
-SSL_CERT_DIR="/etc/nginx/ssl" # Directory to store certificates
-DB_CERT_FILE="${SSL_CERT_DIR}/${DATABASE_SUBDOMAIN}.pem"
-DB_KEY_FILE="${SSL_CERT_DIR}/${DATABASE_SUBDOMAIN}.key"
-DASH_CERT_FILE="${SSL_CERT_DIR}/${DASHBOARD_SUBDOMAIN}.pem"
-DASH_KEY_FILE="${SSL_CERT_DIR}/${DASHBOARD_SUBDOMAIN}.key"
+# Use a single cert valid for both subdomains, named after the main domain
+SSL_CERT_DIR="/etc/nginx/ssl"
+CERT_NAME="${DOMAIN}" # Base name for cert/key files
+CERT_FILE="${SSL_CERT_DIR}/${CERT_NAME}.pem"
+KEY_FILE="${SSL_CERT_DIR}/${CERT_NAME}.key"
+
 
 # Get Server Public IPv4 Address (with manual fallback)
 show_progress "Fetching Server Public IPv4 Address"
 SERVER_IP=$(curl -s --connect-timeout 5 http://169.254.169.254/latest/meta-data/public-ipv4 || curl -4s --connect-timeout 5 ifconfig.me || curl -4s --connect-timeout 5 icanhazip.com || echo "")
 
-# Check if auto-detection failed
 if [ -z "$SERVER_IP" ]; then
     log_error "Could not automatically determine the server's public IPv4 address."
     log_warning "This might be due to network restrictions or the metadata service being unavailable."
     log_warning "Please find your server's Public IPv4 address manually (e.g., in your Lightsail console)."
-
-    # Loop until a non-empty IP is entered
     while [ -z "$SERVER_IP" ]; do
         read -p "$(echo -e "${YELLOW}Please manually enter the server's public IPv4 address:${NC} ")" SERVER_IP
-        if [ -z "$SERVER_IP" ]; then
-            log_warning "Server IP address cannot be empty. Please try again."
-        # Basic sanity check for IP format (optional but helpful)
-        elif [[ ! "$SERVER_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            log_warning "The input '$SERVER_IP' doesn't look like a valid IPv4 address. Please check and re-enter."
-            SERVER_IP="" # Clear invalid input
-        fi
+        if [ -z "$SERVER_IP" ]; then log_warning "Server IP address cannot be empty. Please try again."; fi
+        elif [[ ! "$SERVER_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then log_warning "Input '$SERVER_IP' invalid. Please check."; SERVER_IP=""; fi
     done
     log_success "Using manually entered Server IPv4: ${SERVER_IP}"
 else
@@ -114,8 +133,11 @@ echo -e "  ${BLUE}Domain:${NC} ${DOMAIN}"
 echo -e "  ${BLUE}Database URL:${NC} https://${DATABASE_SUBDOMAIN}"
 echo -e "  ${BLUE}Dashboard URL:${NC} https://${DASHBOARD_SUBDOMAIN}"
 echo -e "  ${BLUE}Server IPv4:${NC} ${SERVER_IP}"
-echo -e "  ${BLUE}SSL Certificate Dir:${NC} ${SSL_CERT_DIR}"
-echo -e "  ${RED}${BOLD}Note:${NC} You will need to MANUALLY generate Cloudflare Origin Certificates and place them in ${SSL_CERT_DIR}.\n"
+echo -e "  ${BLUE}Cloudflare Email:${NC} ${CF_EMAIL}"
+echo -e "  ${BLUE}Cloudflare API Key:${NC} ************ (Hidden)"
+echo -e "  ${BLUE}SSL Cert Location:${NC} ${CERT_FILE}"
+echo -e "  ${BLUE}SSL Key Location:${NC} ${KEY_FILE}"
+echo -e "  ${GREEN}${BOLD}Note:${NC} An Origin Certificate for *.${DOMAIN} and ${DOMAIN} will be automatically generated via Cloudflare API.\n"
 
 read -p "$(echo -e "${YELLOW}Proceed with installation? (y/n):${NC} ")" confirm
 if [[ ! $confirm =~ ^[yY]([eE][sS])?$ ]]; then
@@ -129,10 +151,9 @@ fi
 show_progress "Updating system packages"
 apt update && apt upgrade -y
 
-# Install Essential Tools & Nginx
-show_progress "Installing Nginx and other essential tools"
-# Note: certbot is NOT installed in this version
-apt install -y wget curl gnupg2 apt-transport-https software-properties-common ufw nginx
+# Install Essential Tools & Nginx & JQ
+show_progress "Installing Nginx, JQ, and other essential tools"
+apt install -y wget curl gnupg2 apt-transport-https software-properties-common ufw nginx jq
 
 # Install InfluxDB
 show_progress "Installing InfluxDB"
@@ -159,37 +180,90 @@ show_progress "Creating SSL certificate directory: ${SSL_CERT_DIR}"
 mkdir -p "${SSL_CERT_DIR}"
 chmod 700 "${SSL_CERT_DIR}" # Secure directory permissions
 
-# Configure Nginx for HTTPS (using placeholders for Cloudflare Origin Certs)
-show_progress "Creating Nginx configurations for ${DATABASE_SUBDOMAIN} and ${DASHBOARD_SUBDOMAIN}"
+# --- Cloudflare API: Generate and Deploy Origin Certificate ---
+show_progress "Attempting to generate Cloudflare Origin Certificate via API"
+
+# Prepare JSON payload for API request (includes wildcard and root domain for flexibility)
+# Alternatively, list specific subdomains: "\"${DATABASE_SUBDOMAIN}\", \"${DASHBOARD_SUBDOMAIN}\""
+# Using wildcard + root is often easier. Cloudflare might auto-include root if wildcard is used. Check their behavior.
+JSON_PAYLOAD=$(cat <<EOF
+{
+  "hostnames": ["*.${DOMAIN}", "${DOMAIN}"],
+  "requested_validity": 5475,
+  "request_type": "origin-rsa"
+}
+EOF
+)
+
+# Make the API call
+API_RESPONSE=$(curl -s -X POST "https://api.cloudflare.com/client/v4/certificates" \
+     -H "X-Auth-Email: ${CF_EMAIL}" \
+     -H "X-Auth-Key: ${CF_API_KEY}" \
+     -H "Content-Type: application/json" \
+     --data "${JSON_PAYLOAD}")
+
+# Check if the API call was successful and extract data using jq
+if echo "${API_RESPONSE}" | jq -e '.success == true' > /dev/null; then
+    log_success "Cloudflare API call successful."
+
+    CERTIFICATE=$(echo "${API_RESPONSE}" | jq -r '.result.certificate')
+    PRIVATE_KEY=$(echo "${API_RESPONSE}" | jq -r '.result.private_key')
+    CERT_ID=$(echo "${API_RESPONSE}" | jq -r '.result.id') # Optional: store ID if needed later
+
+    if [ -z "$CERTIFICATE" ] || [ "$CERTIFICATE" == "null" ] || [ -z "$PRIVATE_KEY" ] || [ "$PRIVATE_KEY" == "null" ]; then
+         log_error "Failed to extract certificate or private key from API response."
+         log_error "Response: ${API_RESPONSE}"
+         exit 1
+    fi
+
+    log_info "Saving Origin Certificate to ${CERT_FILE}"
+    echo "${CERTIFICATE}" > "${CERT_FILE}"
+
+    log_info "Saving Private Key to ${KEY_FILE}"
+    echo "${PRIVATE_KEY}" > "${KEY_FILE}"
+
+    log_info "Setting secure permissions for certificate and key"
+    chmod 644 "${CERT_FILE}"
+    chmod 600 "${KEY_FILE}"
+    chown root:root "${SSL_CERT_DIR}"/*
+
+    log_success "Cloudflare Origin Certificate and Key deployed successfully."
+else
+    log_error "Cloudflare API call failed."
+    log_error "Please check your Cloudflare Email/API Key and domain settings."
+    log_error "API Response: ${API_RESPONSE}"
+    # Clean up potentially created directory if API failed early
+    rm -rf "${SSL_CERT_DIR}"
+    exit 1
+fi
+# Clear sensitive variable from memory (basic measure)
+unset CF_API_KEY CF_EMAIL
+
+# --- Configure Nginx for HTTPS (using the generated certs) ---
+show_progress "Creating Nginx configurations using generated certificates"
 
 # Nginx config for database subdomain (HTTPS)
 cat > /etc/nginx/sites-available/${DATABASE_SUBDOMAIN} << EOF
 server {
     listen 80;
     server_name ${DATABASE_SUBDOMAIN};
-    # Redirect all HTTP traffic to HTTPS
-    return 301 https://\$host\$request_uri;
+    return 301 https://\$host\$request_uri; # Redirect HTTP to HTTPS
 }
-
 server {
     listen 443 ssl http2;
     listen [::]:443 ssl http2;
     server_name ${DATABASE_SUBDOMAIN};
 
-    # --- SSL Configuration ---
-    # IMPORTANT: You MUST place the Cloudflare Origin Certificate & Key here!
-    ssl_certificate ${DB_CERT_FILE};
-    ssl_certificate_key ${DB_KEY_FILE};
+    ssl_certificate ${CERT_FILE};       # Use the generated cert
+    ssl_certificate_key ${KEY_FILE};    # Use the generated key
 
-    # Recommended SSL settings
+    # Recommended SSL settings (unchanged)
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_prefer_server_ciphers off;
     ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
-    # Consider adding HSTS header after confirming everything works:
-    # add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
 
     location / {
-        proxy_pass http://localhost:8086; # Assuming InfluxDB runs on default port
+        proxy_pass http://localhost:8086;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -203,29 +277,23 @@ cat > /etc/nginx/sites-available/${DASHBOARD_SUBDOMAIN} << EOF
 server {
     listen 80;
     server_name ${DASHBOARD_SUBDOMAIN};
-    # Redirect all HTTP traffic to HTTPS
-    return 301 https://\$host\$request_uri;
+    return 301 https://\$host\$request_uri; # Redirect HTTP to HTTPS
 }
-
 server {
     listen 443 ssl http2;
     listen [::]:443 ssl http2;
     server_name ${DASHBOARD_SUBDOMAIN};
 
-    # --- SSL Configuration ---
-    # IMPORTANT: You MUST place the Cloudflare Origin Certificate & Key here!
-    ssl_certificate ${DASH_CERT_FILE};
-    ssl_certificate_key ${DASH_KEY_FILE};
+    ssl_certificate ${CERT_FILE};       # Use the generated cert
+    ssl_certificate_key ${KEY_FILE};    # Use the generated key
 
-    # Recommended SSL settings (same as above)
+    # Recommended SSL settings (unchanged)
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_prefer_server_ciphers off;
     ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
-    # Consider adding HSTS header after confirming everything works:
-    # add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
 
     location / {
-        proxy_pass http://localhost:3000; # Assuming Grafana runs on default port
+        proxy_pass http://localhost:3000;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -247,19 +315,20 @@ ln -sf /etc/nginx/sites-available/${DASHBOARD_SUBDOMAIN} /etc/nginx/sites-enable
 # Remove default Nginx site if it exists
 rm -f /etc/nginx/sites-enabled/default
 
-# Test Nginx configuration (EXPECTED TO FAIL INITIALLY)
-show_progress "Testing Nginx configuration (will likely fail until certificates are placed)"
-if ! nginx -t; then
-    log_warning "Nginx configuration test failed, which is *expected* at this stage because the SSL certificates are missing."
-    log_warning "You will need to place the Cloudflare Origin certificates in ${SSL_CERT_DIR} and then run 'sudo nginx -t' and 'sudo systemctl restart nginx' manually."
+# Test Nginx configuration (SHOULD PASS NOW)
+show_progress "Testing Nginx configuration"
+if nginx -t; then
+    log_success "Nginx configuration test successful."
 else
-    # This shouldn't happen unless dummy certs exist, but handle it just in case
-    log_success "Nginx configuration test successful (unexpected - did you pre-place certs?)."
+    log_error "Nginx configuration test failed. Please check logs and configs."
+    log_error "Files: /etc/nginx/sites-available/${DATABASE_SUBDOMAIN}, /etc/nginx/sites-available/${DASHBOARD_SUBDOMAIN}"
+    log_error "Check if certificate files exist and have correct permissions: ${CERT_FILE}, ${KEY_FILE}"
+    exit 1
 fi
 
-# Start and Enable Nginx (even if test fails, we need it running for later restart)
-show_progress "Starting and enabling Nginx service"
-systemctl start nginx
+# Restart/Enable Nginx
+show_progress "Restarting and enabling Nginx service"
+systemctl restart nginx
 systemctl enable nginx
 
 # Configure Firewall
@@ -270,74 +339,25 @@ ufw allow 443/tcp  # HTTPS
 ufw --force enable # Enable UFW non-interactively
 log_success "Firewall configured and enabled."
 
-# --- MANUAL STEPS REQUIRED ---
-echo -e "\n${BOLD}${YELLOW}!!!!!!!!!!!!!!!!!! IMPORTANT MANUAL STEPS REQUIRED !!!!!!!!!!!!!!!!!!${NC}"
-echo -e "${YELLOW}The basic setup is complete, but Nginx requires Cloudflare Origin Certificates to serve HTTPS.${NC}\n"
-
-echo -e "${BOLD}1. Configure Cloudflare DNS:${NC}"
-echo -e "   - Log in to your Cloudflare account for the domain '${BOLD}${DOMAIN}${NC}'."
-echo -e "   - Add/Update these DNS A records:"
-echo -e "     - Type: ${BOLD}A${NC}, Name: ${BOLD}database${NC}, Content: ${BOLD}${SERVER_IP}${NC}, Proxy status: ${BOLD}Proxied (Orange Cloud)${NC}"
-echo -e "     - Type: ${BOLD}A${NC}, Name: ${BOLD}dashboard${NC}, Content: ${BOLD}${SERVER_IP}${NC}, Proxy status: ${BOLD}Proxied (Orange Cloud)${NC}"
-echo -e "   - Navigate to the ${BOLD}SSL/TLS -> Overview${NC} section."
-echo -e "   - Set the encryption mode to: ${BOLD}Full (strict)${NC}. This is crucial for security."
-echo -e ""
-
-echo -e "${BOLD}2. Generate Cloudflare Origin Certificates:${NC}"
-echo -e "   - In Cloudflare, go to ${BOLD}SSL/TLS -> Origin Server${NC}."
-echo -e "   - Click ${BOLD}Create Certificate${NC}."
-echo -e "   - Choose '${BOLD}Let Cloudflare generate a private key and a CSR${NC}' (unless you have specific needs)."
-echo -e "   - Ensure the hostnames ${BOLD}${DATABASE_SUBDOMAIN}${NC} and ${BOLD}${DASHBOARD_SUBDOMAIN}${NC} are listed (or use a wildcard like *.${DOMAIN} if appropriate)."
-echo -e "   - Choose a validity period (e.g., 15 years)."
-echo -e "   - Click ${BOLD}Create${NC}."
-echo -e ""
-
-echo -e "${BOLD}3. Install Certificates on Your Server:${NC}"
-echo -e "   - ${RED}CRITICAL:${NC} Cloudflare will show you the ${BOLD}Origin Certificate${NC} and the ${BOLD}Private Key${NC}. Copy each one."
-echo -e "   - ${YELLOW}You MUST save the Private Key now, Cloudflare will not show it again.${NC}"
-echo -e "   - Connect to your Lightsail server via SSH."
-echo -e "   - Create/Edit the certificate file for the database:"
-echo -e "     ${CYAN}sudo nano ${DB_CERT_FILE}${NC}"
-echo -e "     Paste the entire ${BOLD}Origin Certificate${NC} (including -----BEGIN/END CERTIFICATE----- lines) into this file. Save and close (Ctrl+X, Y, Enter)."
-echo -e "   - Create/Edit the key file for the database:"
-echo -e "     ${CYAN}sudo nano ${DB_KEY_FILE}${NC}"
-echo -e "     Paste the entire ${BOLD}Private Key${NC} (including -----BEGIN/END PRIVATE KEY----- lines) into this file. Save and close."
-echo -e "   - Create/Edit the certificate file for the dashboard (paste the SAME Origin Certificate):"
-echo -e "     ${CYAN}sudo nano ${DASH_CERT_FILE}${NC}"
-echo -e "     Paste the same ${BOLD}Origin Certificate${NC} again. Save and close."
-echo -e "   - Create/Edit the key file for the dashboard (paste the SAME Private Key):"
-echo -e "     ${CYAN}sudo nano ${DASH_KEY_FILE}${NC}"
-echo -e "     Paste the same ${BOLD}Private Key${NC} again. Save and close."
-echo -e ""
-echo -e "   - ${BOLD}Set Secure Permissions:${NC}"
-echo -e "     ${CYAN}sudo chmod 644 ${DB_CERT_FILE} ${DASH_CERT_FILE}${NC}"
-echo -e "     ${CYAN}sudo chmod 600 ${DB_KEY_FILE} ${DASH_KEY_FILE}${NC}"
-echo -e "     ${CYAN}sudo chown root:root ${SSL_CERT_DIR}/*${NC} (Ensure ownership is root)"
-echo -e ""
-
-echo -e "${BOLD}4. Test and Restart Nginx:${NC}"
-echo -e "   - After placing the certificate and key files, test the Nginx configuration:"
-echo -e "     ${CYAN}sudo nginx -t${NC}"
-echo -e "   - If the test is successful, restart Nginx to apply the changes:"
-echo -e "     ${CYAN}sudo systemctl restart nginx${NC}"
-echo -e "   - If the test fails, review the error message and double-check the certificate/key files and Nginx configuration."
-echo -e ""
-
 # --- Final Instructions ---
 echo -e "\n${BOLD}${GREEN}"
 echo "┌─────────────────────────────────────────────────┐"
-echo "│      SETUP SCRIPT FINISHED (Manual Steps Req.)    │"
+echo "│         SETUP SCRIPT FINISHED (Automated)         │"
 echo "└─────────────────────────────────────────────────┘"
 echo -e "${NC}"
 
-echo -e "${CYAN}SUMMARY & NEXT STEPS (After Manual Cert Installation & Nginx Restart):${NC}\n"
-echo -e "${BOLD}1. Cloudflare Settings:${NC}"
-echo -e "   - Ensure DNS A records for '${BOLD}database${NC}' and '${BOLD}dashboard${NC}' point to ${BOLD}${SERVER_IP}${NC}."
-echo -e "   - Ensure Proxy status is ${BOLD}Proxied (Orange Cloud)${NC}."
-echo -e "   - Ensure SSL/TLS Encryption mode is ${BOLD}Full (strict)${NC}."
+echo -e "${CYAN}SUMMARY & NEXT STEPS:${NC}\n"
+echo -e "${BOLD}1. Cloudflare Configuration:${NC}"
+echo -e "   - Log in to your Cloudflare account for the domain '${BOLD}${DOMAIN}${NC}'."
+echo -e "   - Ensure these DNS A records exist and are set to ${BOLD}Proxied (Orange Cloud)${NC}:"
+echo -e "     - Type: ${BOLD}A${NC}, Name: ${BOLD}database${NC}, Content: ${BOLD}${SERVER_IP}${NC}"
+echo -e "     - Type: ${BOLD}A${NC}, Name: ${BOLD}dashboard${NC}, Content: ${BOLD}${SERVER_IP}${NC}"
+echo -e "   - Navigate to the ${BOLD}SSL/TLS -> Overview${NC} section."
+echo -e "   - Ensure the encryption mode is set to: ${BOLD}Full (strict)${NC}."
+echo -e "   - (Optional) Verify the new Origin Certificate under ${BOLD}SSL/TLS -> Origin Server${NC}."
 echo -e ""
 
-echo -e "${BOLD}2. Access Your Services:${NC}"
+echo -e "${BOLD}2. Access Your Services (after DNS propagation):${NC}"
 echo -e "   - InfluxDB API: ${GREEN}https://${DATABASE_SUBDOMAIN}${NC}"
 echo -e "   - Grafana UI:   ${GREEN}https://${DASHBOARD_SUBDOMAIN}${NC}"
 echo -e "     ${YELLOW}Default Grafana login: admin / admin (CHANGE THIS IMMEDIATELY!)${NC}"
@@ -358,4 +378,4 @@ echo -e "   - ${RED}IMMEDIATELY change the admin password${NC}."
 echo -e "   - Consider disabling anonymous access/sign-up in ${CYAN}sudo nano /etc/grafana/grafana.ini${NC}."
 echo -e ""
 
-echo -e "${GREEN}Once you complete the manual certificate steps, enjoy your secured setup!${NC}"
+echo -e "${GREEN}Automated setup complete. Enjoy your secured InfluxDB and Grafana!${NC}"
