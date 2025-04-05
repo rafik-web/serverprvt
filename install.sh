@@ -54,6 +54,11 @@ for cmd in curl wget gpg apt ufw systemctl openssl jq; do if ! command -v $cmd &
 # --- User Input ---
 log_info "Gathering required information..."
 while [ -z "$DOMAIN" ]; do read -p "$(echo -e "${YELLOW}Enter domain:${NC} ")" DOMAIN; if [[ ! "$DOMAIN" == *"."* ]]; then log_warning "Invalid domain."; DOMAIN=""; fi; done
+if [[ -z "$SUBDOMAIN" ]]; then
+  RECORD_NAME="$DOMAIN"
+else
+  RECORD_NAME="$SUBDOMAIN.$DOMAIN"
+fi
 while [ -z "$CF_EMAIL" ]; do read -p "$(echo -e "${YELLOW}Enter CF email:${NC} ")" CF_EMAIL; if [[ ! "$CF_EMAIL" =~ ^.+@.+\..+$ ]]; then log_warning "Invalid email."; CF_EMAIL=""; fi; done
 while [ -z "$CF_API_KEY" ]; do log_warning "API Key needs Zone:Read, DNS:Edit, SSL:Edit"; read -p "$(echo -e "${YELLOW}${BOLD}Enter CF API Key (VISIBLE):${NC} ")" CF_API_KEY; echo; if [ -z "$CF_API_KEY" ]; then log_warning "API Key empty."; fi; done
 
